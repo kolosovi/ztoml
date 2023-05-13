@@ -3,76 +3,63 @@
 ```mermaid
 TopLevel --"whitespace:" --> TopLevel
 TopLevel --"#: set after_comment_state = TopLevel" --> Comment
-TopLevel --"double quote: set after_string_state = ValueBegin" --> BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2
-TopLevel --"single quote: set after_string_state = ValueBegin" --> LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2
+TopLevel --"double quote: set after_string_state = ValueBegin, set string_is_content_start = true" --> BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2
+TopLevel --"single quote: set after_string_state = ValueBegin, set string_is_content_start = true" --> LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2
 TopLevel --"ALPHA | DIGIT | - | _: set after_key_state = ValueBegin" --> UnquotedKey
-// TODO: tables
+%% TODO: tables
 
 UnquotedKey --"unquoted-key-char:" --> UnquotedKey
 UnquotedKey --"dot: emit UnquotedKey, emit DottedKeySeparator" --> SimpleKey
 UnquotedKey --"keyval separator: if after_key_state is ValueBegin, then emit UnquotedKey and unset after_key_state. Otherwise error out." --> ValueBegin
 
-BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"double quote:" --> BasicStringMaybeClosingQuoteOrLeadingQuote3
-BasicStringMaybeClosingQuoteOrLeadingQuote3 --"double quote: set string_kind = multiline_basic" --> StringMaybeCharOrLeadingNewline
-StringMaybeCharOrLeadingNewline --"\n: account for size diff" --> String
-StringMaybeCharOrLeadingNewline --"\r: account for size diff" --> StringNewline
-StringMaybeCharOrLeadingNewline --"ascii w/o control codes & special chars (0x20 | 0x09 | 0x21 | 0x23 - 0x5b | 0x5d - 0x9e):" --> String
-StringMaybeCharOrLeadingNewline --"leading byte of 2-byte UTF-8 sequence (0xC2-0xDF): set after_utf8_state = String" --> StringUtf8Byte2Of2
-StringMaybeCharOrLeadingNewline --"leading byte of 3-byte UTF-8 sequence (0xE0, 0xE1-0xEC, 0xED, 0xEE-0xEF): set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of3
-StringMaybeCharOrLeadingNewline --"leading byte of 4-byte UTF-8 sequence (0xF0, 0xF1-0xF3, 0xF4): set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of4
-BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"ascii w/o control codes & special chars (0x20 | 0x09 | 0x21 | 0x23 - 0x5b | 0x5d - 0x9e): set string_kind = basic" --> String
-BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"leading byte of 2-byte UTF-8 sequence (0xC2-0xDF): set string_kind = basic, set after_utf8_state = String" --> StringUtf8Byte2Of2
-BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"leading byte of 3-byte UTF-8 sequence (0xE0, 0xE1-0xEC, 0xED, 0xEE-0xEF): set string_kind = basic, set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of3
-BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"leading byte of 4-byte UTF-8 sequence (0xF0, 0xF1-0xF3, 0xF4): set string_kind = basic, set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of4
-String --"ascii w/o control codes & special chars (0x20 | 0x09 | 0x21 | 0x23 - 0x5b | 0x5d - 0x7e):" --> String
-String --"\n and string_kind = multiline_basic:" --> String
-String --"\r and string_kind = multiline_basic:" --> StringNewline
-StringNewline --"\n:" --> String
-String --"leading byte of 2-byte UTF-8 sequence (0xC2-0xDF): set after_utf8_state = String" --> StringUtf8Byte2Of2
-String --"leading byte of 3-byte UTF-8 sequence (0xE0, 0xE1-0xEC, 0xED, 0xEE-0xEF): set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of3
-String --"leading byte of 4-byte UTF-8 sequence (0xF0, 0xF1-0xF3, 0xF4): set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of4
-String --"double quote and string_kind = basic: unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO" --> $after_string_state
-String --"double quote and string_kind = multiline_basic:" --> BasicStringMaybeQuote2OrChar
-BasicStringMaybeQuote2OrChar --"double quote:" BasicStringMaybeQuote3OrChar
-BasicStringMaybeQuote2OrChar --"ascii w/o control codes & special chars PLUS \n (0x20 | 0x09 | 0x21 | 0x23 - 0x5b | 0x5d - 0x7e | \n:" --> String
-BasicStringMaybeQuote2OrChar --"\r:" --> StringNewline
-BasicStringMaybeQuote3OrChar --"double quote:" BasicStringMaybeQuote4OrEnd
--- char
-BasicStringMaybeQuote4OrEnd --"double quote:" BasicStringMaybeQuote5OrEnd
-BasicStringMaybeQuote4OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
-BasicStringMaybeQuote5OrEnd --"double quote: unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true." --> $after_string_state
-BasicStringMaybeQuote5OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
+%% LOGIC FOR STRINGS
+%% literal-char = %x09 / %x20-26 /           %x28-7E / non-ascii
+%% rrbasic-char = %x09 / %x20-21 / %x23-5B / %x5D-7E / non-ascii
+%%                tab    \n     \r               "                '                \
+%% uni-char     = %x09 / %x0A / %x0D / %x20-21 / %x22 / %x23-26 / %x27 / %x28-5B / %x5C / %x5D-7E / non-ascii
+%%   basic        Y      N      N      Y         N      Y         Y      Y         Y[1]    Y        Y
+%%   literal      Y      N      N      Y         Y      Y         N      Y         Y       Y        Y
+%%   ml-basic     Y      Y[2]   Y[3]   Y         Y[4]   Y         Y      Y         Y[5]    Y        Y
+%%   ml-literal   Y      Y[6]   Y[7]   Y         Y      Y         Y[8]   Y         Y       Y        Y
+%%
+%%   algo         Y      Y      Y      Y         Y      Y         Y      Y         Y       Y        Y
+%%
+%%   FOOTNOTES
+%%   [1] reverse solidus starts an escape sequence
+%%   [2] if \n is the first after leading triple quote, it must be trimmed. It also may be an escaped newline.
+%%   [3] \r must be part of CRLF, otherwise it's illegal. If it comes first after leading triple quote, it must be trimmed along with \n. It also may be an escaped newline.
+%%   [4] up to 2 double quotes allowed
+%%   [5] reverse solidus starts an escape sequence, AND may also start escaped newline
+%%   [6] if \n is the first after leading triple quote, it must be trimmed. It also may be an escaped newline.
+%%   [7] \r must be part of CRLF, otherwise it's illegal. If it comes first after leading triple quote, it must be trimmed along with \n. It also may be an escaped newline.
+%%   [8] up to 2 single quotes allowed
+%%   so how it should work:
+%%   1) %x09 / %x20-21 / %x23-26 / %x28-5B / %x5D-7E / non-ascii: the same for all (either String->String or String->Utf8Byte2OfX)
+%%   2) %x5C: if literal, then just String->String, otherwise start escape sequence (NB: multiline escape sequence can include escaped newline)
+%%   3) %x0A, %x0D: if multiline, go to newline mode. Otherwise illegal
+%%   4) %x22 (double quote): if literal, just String->String, if basic, then close string, if ml basic, then go into quote state
+%%   5) %x27 (single quote): if basic, just String->String, if literal, then close string, if ml literal, then go into quote state
 
-XXX: TODO
-LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"ascii w/o control codes and single quote & with horizontal tab (0x09 | 0x20-0x26 | 0x28-0x7e | 
-; literal-char = %x09 / %x20-26 /           %x28-7E / non-ascii
-; rrbasic-char = %x09 / %x20-21 / %x23-5B / %x5D-7E / non-ascii
-;                tab    \n     \r               "                '                \
-; uni-char     = %x09 / %x0A / %x0D / %x20-21 / %x22 / %x23-26 / %x27 / %x28-5B / %x5C / %x5D-7E / non-ascii
-;   basic        Y      N      N      Y         N      Y         Y      Y         Y[1]    Y        Y
-;   literal      Y      N      N      Y         Y      Y         N      Y         Y       Y        Y
-;   ml-basic     Y      Y[2]   Y[3]   Y         Y[4]   Y         Y      Y         Y[5]    Y        Y
-;   ml-literal   Y      Y[6]   Y[7]   Y         Y      Y         Y[8]   Y         Y       Y        Y
-;
-;   algo         Y      Y      Y      Y         Y      Y         Y      Y         Y       Y        Y
-;
-;   FOOTNOTES
-;   [1] reverse solidus starts an escape sequence
-;   [2] if \n is the first after leading triple quote, it must be trimmed. It also may be an escaped newline.
-;   [3] \r must be part of CRLF, otherwise it's illegal. If it comes first after leading triple quote, it must be trimmed along with \n. It also may be an escaped newline.
-;   [4] up to 2 double quotes allowed
-;   [5] reverse solidus starts an escape sequence
-;   [6] if \n is the first after leading triple quote, it must be trimmed. It also may be an escaped newline.
-;   [7] \r must be part of CRLF, otherwise it's illegal. If it comes first after leading triple quote, it must be trimmed along with \n. It also may be an escaped newline.
-;   [8] up to 2 single quotes allowed
-;   so how it should work:
-;   1) %x09 / %x20-21 / %x23-26 / %x28-5B / %x5D-7E / non-ascii: the same for all (either String->String or String->Utf8Byte2OfX)
-;   2) %x5C: if literal, then just String->String, otherwise start escape sequence
-;   3) %x0A, %x0D: if multiline, go to newline mode. Otherwise illegal
-;   4) %x22 (double quote): if literal, just String->String, if basic, then close string, if ml basic, then go into quote state
-;   5) %x27 (single quote): if basic, just String->String, if literal, then close string, if ml literal, then go into quote state
-
-String --"reverse solidus: set after_escape_state = String" --> EscapeMaybeSpecialOr2HexOr4HexOr8HexOrWhitespace
+BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"double quote:" --> BasicStringMaybeLeadingQuote3
+BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"(anything else): set string_kind = basic, set string_is_content_start = true. REPEAT THE SAME CHAR" --> String
+BasicStringMaybeLeadingQuote3 --"double quote: set string_kind = multiline_basic" --> String
+BasicStringMaybeLeadingQuote3 --"(anything else): set string_kind = basic, unset after_string_state, set string_is_content_start = true, if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPEAT THE SAME CHAR" --> $after_string_state
+LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"single quote:" --> LiteralStringMaybeLeadingQuote3
+LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2 --"(anything else): set string_kind = literal, set string_is_content_start = true. REPEAT THE SAME CHAR" --> String
+LiteralStringMaybeLeadingQuote3 --"single quote: set string_kind = multiline_literal" --> String
+LiteralStringMaybeLeadingQuote3 --"(anything else): set string_kind = literal, unset after_string_state, set string_is_content_start = true, if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPEAT THE SAME CHAR" --> $after_string_state
+String --"%x09 / %x20-21 / %x23-26 / %x28-5B / %x5D-7E: set string_is_content_start = false" --> String
+String --"leading byte of 2-byte UTF-8 sequence (0xC2-0xDF): set string_is_content_start = false, set after_utf8_state = String" --> StringUtf8Byte2Of2
+StringUtf8Byte2Of2 --"2d byte of 2-byte UTF-8 sequence (0x80-0xBF): unset after_utf8_state" --> $after_utf8_state
+String --"leading byte of 3-byte UTF-8 sequence (0xE0, 0xE1-0xEC, 0xED, 0xEE-0xEF): set string_is_content_start = false, set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of3
+StringUtf8Byte2Of3 --"2d byte of 3-byte UTF-8 sequence (various depending on the translation table & the first byte):" --> StringUtf8Byte3Of3
+StringUtf8Byte3Of3 --"3d byte of 3-byte UTF-8 sequence (0x80-0xBF): unset after_utf8_state, unset leading_utf8_byte" --> $after_utf8_state
+String --"leading byte of 4-byte UTF-8 sequence (0xF0, 0xF1-0xF3, 0xF4): set string_is_content_start = false, set after_utf8_state = String, set leading_utf8_byte" --> StringUtf8Byte2Of4
+StringUtf8Byte2Of4 --"2d byte of 4-byte UTF-8 sequence (various depending on the translation table & the first byte):" --> StringUtf8Byte3Of4
+StringUtf8Byte3Of4 --"3d byte of 4-byte UTF-8 sequence (0x80-0xBF):" --> StringUtf8Byte4Of4
+StringUtf8Byte4Of4 --"4th byte of 4-byte UTF-8 sequence (0x80-0xBF): unset after_utf8_state, unset leading_utf8_byte" --> $after_utf8_state
+String --"reverse solidus and is literal: set string_is_content_start = false" --> String
+String --"reverse solidus and is basic: set string_is_content_start = false, set after_escape_state = String" --> EscapeMaybeSpecialOr2HexOr4HexOr8HexOrWhitespace
 EscapeMaybeSpecialOr2HexOr4HexOr8HexOrWhitespace --"double quote: unset after_escape_state" --> $after_escape_state
 EscapeMaybeSpecialOr2HexOr4HexOr8HexOrWhitespace --"reverse solidus: unset after_escape_state" --> $after_escape_state
 EscapeMaybeSpecialOr2HexOr4HexOr8HexOrWhitespace --"backspace: unset after_escape_state" --> $after_escape_state
@@ -112,12 +99,29 @@ MultilineEscapedNewlineEnd --"newline (0x0a):" --> MultilineEscapedNewlineEnd
 MultilineEscapedNewlineEnd --"carriage return (0x0d):" --> MultilineEscapedNewlineEndNewline
 MultilineEscapedNewlineEndNewline --"newline (0x0a):" --> MultilineEscapedNewlineEnd
 MultilineEscapedNewlineEnd --"(anything else): unset after_escape_state, REPEAT THE SAME CHAR" --> $after_escape_state
-StringUtf8Byte2Of2 --"2d byte of 2-byte UTF-8 sequence (0x80-0xBF): unset after_utf8_state" --> $after_utf8_state
-StringUtf8Byte2Of3 --"2d byte of 3-byte UTF-8 sequence (various depending on the translation table & the first byte):" --> StringUtf8Byte3Of3
-StringUtf8Byte3Of3 --"3d byte of 3-byte UTF-8 sequence (0x80-0xBF): unset after_utf8_state, unset leading_utf8_byte" --> $after_utf8_state
-StringUtf8Byte2Of4 --"2d byte of 4-byte UTF-8 sequence (various depending on the translation table & the first byte):" --> StringUtf8Byte3Of4
-StringUtf8Byte3Of4 --"3d byte of 4-byte UTF-8 sequence (0x80-0xBF):" --> StringUtf8Byte4Of4
-StringUtf8Byte4Of4 --"4th byte of 4-byte UTF-8 sequence (0x80-0xBF): unset after_utf8_state, unset leading_utf8_byte" --> $after_utf8_state
+String --"0x0A (newline) and is multiline: set string_is_content_start = false, if string_is_content_start, account for size diff" --> String
+String --"0x0D (CR) and is multiline: set string_is_content_start=false, if string_is_content_start, account for size diff" --> StringNewline
+StringNewline --"0x0A (newline):" --> String
+String --"0x22 (double quote) and is literal: set string_is_content_start=false" --> String
+String --"0x22 (double quote) and is multiline basic: set string_is_content_start=false" --> BasicStringMaybeQuote2OrChar
+BasicStringMaybeQuote2OrChar --"0x22 (double quote):" BasicStringMaybeQuote3OrChar
+BasicStringMaybeQuote2OrChar --"(anything else): REPEAT THE SAME CHAR" --> String
+BasicStringMaybeQuote3OrChar --"0x22 (double quote):" BasicStringMaybeQuote4OrEnd
+BasicStringMaybeQuote3OrChar --"(anything else): REPEAT THE SAME CHAR" --> String
+BasicStringMaybeQuote4OrEnd --"0x22 (double quote):" BasicStringMaybeQuote5OrEnd
+BasicStringMaybeQuote4OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
+BasicStringMaybeQuote5OrEnd --"0x22 (double quote): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO." --> $after_string_state
+BasicStringMaybeQuote5OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
+String --"0x27 (single quote) and is basic: set string_is_content_start=false" --> String
+String --"0x27 (single quote) and is multiline literal: set string_is_content_start=false" --> LiteralStringMaybeQuote2OrChar
+LiteralStringMaybeQuote2OrChar --"0x27 (single quote):" LiteralStringMaybeQuote3OrChar
+LiteralStringMaybeQuote2OrChar --"(anything else): REPEAT THE SAME CHAR" --> String
+LiteralStringMaybeQuote3OrChar --"0x27 (single quote):" LiteralStringMaybeQuote4OrEnd
+LiteralStringMaybeQuote3OrChar --"(anything else): REPEAT THE SAME CHAR" --> String
+LiteralStringMaybeQuote4OrEnd --"0x27 (single quote):" LiteralStringMaybeQuote5OrEnd
+LiteralStringMaybeQuote4OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
+LiteralStringMaybeQuote5OrEnd --"0x27 (single quote): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO." --> $after_string_state
+LiteralStringMaybeQuote5OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
 
 Comment --"\n:"--> $after_comment_state
 Comment --"allowed-comment-char:"--> Comment
