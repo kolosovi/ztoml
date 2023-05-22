@@ -1,16 +1,178 @@
 ## State diagram
 
 ```mermaid
-TopLevel --"whitespace:" --> TopLevel
-TopLevel --"#: set after_comment_state = TopLevel" --> Comment
-TopLevel --"double quote: set after_string_state = ValueBegin, set string_is_content_start = true" --> BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2
-TopLevel --"single quote: set after_string_state = ValueBegin, set string_is_content_start = true" --> LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2
-TopLevel --"ALPHA | DIGIT | - | _: set after_key_state = ValueBegin" --> UnquotedKey
-%% TODO: tables
+%% I introduce a container stack.
+%% stack is empty => after value state is TopLevel
+%% stack top is Table => after value state is Table
+%% stack top is InlineTable => after value state is InlineTableKeyvalEnd
+%% stack top is Array => after value state is Array
+%% 
+%% when do we push to the stack?
+%% 3) when we encounter an inline table open symbol
+%% 4) when we encounter an array open symbol
+%%
+%% when do we pop from the stack?
+%% 2) when we are in an array & we encounter array close symbol
+%% 3) when we are in an inline table & we encounter inline table close symbol
+%%
+%% when do we consult the stack?
+%% 1) when a value ends:
+%%      if stack is empty, we go to TopLevelExpressionEnd
+%%      if stack top is InlineTable, we go to InlineTableValueEnd
+%%      if stack top is Array, we go to ArrayValueEnd
+%% ^ this is the stackState() function.
+%%
+%% everything which can be inside TopLevel can also be inside Table (i.e. we expect a KV pair or next table/array table)
+%% everything which can be inside TopLevel can also be inside ArrayTable (i.e. we expect a KV pair or next table/array table)
+%% the same for InlineTable, BUT 1) we don't expect next table/array table 2) comma-separated KV pairs
+%% inside Arrays, only values are permitted
+%% so yeah, I need to keep a stack. YAY
+%%
+%% Where might a value occur?
+%% - in keyval
+%%      - in top level
+%%      - in inline table
+%%      - in standard table
+%%      - in inline table
+%% - in an array
+%% What may come after value?
+%% 1. top level if this was a keyval. And top level after value is indistinguishable from top level before any value (the same tokens might occur)
+%% 2. array if this was a value inside array. In this case we may expect a) comma b) array close symbol
+%% 3. inline table if this was a value inside inline table. In this case we may expect a) comma b) inline table close symbol
+%% my strategy:
+%% 1. standard tables, array tables occur on top level. No nesting here, I just emit TableOpen/ArrayTableOpen whenever I see a header. After that I'm on TopLevel, I can emit Keys & Values. I don't attempt to validate anything here.
+%% 2. inline tables & arrays have nesting. I.e. inline tables & arrays can be inside inline table and inside array. Ergo I need a stack that has InlineTable/Array inside of it.
 
-UnquotedKey --"unquoted-key-char:" --> UnquotedKey
-UnquotedKey --"dot: emit UnquotedKey, emit DottedKeySeparator" --> SimpleKey
-UnquotedKey --"keyval separator: if after_key_state is ValueBegin, then emit UnquotedKey and unset after_key_state. Otherwise error out." --> ValueBegin
+TopLevel --"whitespace:" --> TopLevel
+TopLevel --"#: set after_comment_state = TopLevelExpressionEnd" --> Comment
+TopLevelExpressionEnd --"whitespace:" --> TopLevelExpressionEnd
+TopLevelExpressionEnd --"#: set after_comment_state = TopLevelExpressionEnd" --> Comment
+TopLevelExpressionEnd --"0x0A (\n):" --> TopLevel
+TopLevelExpressionEnd --"0x0D (CR): set after_newline_state = TopLevel" --> Newline
+Comment --"allowed-comment-char:"--> Comment
+Comment --"(anything else): unset after_comment_state. REPEAT THE SAME CHAR" --> $after_comment_state
+TopLevel --"ALPHA | DIGIT | - | _: set after_key_state = KeyMaybeDotOrKeyvalSeparator" --> UnquotedKey
+UnquotedKey --"ALPHA | DIGIT | - | _:" --> UnquotedKey
+UnquotedKey --"whitespace: emit Key" --> $after_key_state
+KeyMaybeDotOrKeyvalSeparator --"whitespace:" --> KeyMaybeDotOrKeyvalSeparator
+KeyMaybeDotOrKeyvalSeparator --"0x2e (.): emit DottedKeySeparator" --> DottedKeyPart
+KeyMaybeDotOrKeyvalSeparator --"0x3d (=): emit KeyvalSeparator" --> ValueBegin
+TopLevel --"0x22 (double quote): set after_key_state = KeyvalSeparator, after_string_state = KeyMaybeDotOrKeyvalSeparator, string_kind = basic, string_is_content_start = true" --> String
+TopLevel --"0x27 (single quote): set after_key_state = KeyvalSeparator, after_string_state = KeyMaybeDotOrKeyvalSeparator, string_kind = literal, string_is_content_start = true" --> String
+
+%% val = string / boolean / array / inline-table / date-time / float / integer
+%%       Y        Y         Y       Y
+
+%% value: boolean true
+ValueBegin --"0x74 (t):" --> TrueLiteral2
+TrueLiteral2 --"0x72 (r):" --> TrueLiteral3
+TrueLiteral3 --"0x75 (u):" --> TrueLiteral4
+TrueLiteral4 --"0x65 (e): emit True" --> stackState()
+
+%% value: boolean false
+ValueBegin --"0x66 (f):" --> FalseLiteral2
+FalseLiteral2 --"0x61 (a):" --> FalseLiteral3
+FalseLiteral3 --"0x6C (l):" --> FalseLiteral4
+FalseLiteral4 --"0x73 (s):" --> FalseLiteral5
+FalseLiteral5 --"0x65 (e): emit False" --> stackState()
+
+%% value: string
+ValueBegin --"0x22 (double quote): set after_string_state = stackState()" --> BasicStringMaybeCharOrClosingQuoteOrLeadingQuote2
+ValueBegin --"0x27 (single quote): set after_string_state = stackState()" --> LiteralStringMaybeCharOrClosingQuoteOrLeadingQuote2
+
+%% value: array
+ValueBegin --"0x5B ([): push Array to stack, emit ArrayOpen" --> ValueBegin
+ValueBegin --"0x5D (]) and Array is top of stack: pop stack, emit ArrayClose" --> stackState()
+ValueBegin --"0x23 (#) and Array is top of stack: set after_comment_state = ValueBegin" --> Comment
+ValueBegin --"0x0A (\n) and Array is top of stack" --> ValueBegin
+ValueBegin --"0x0D (CR) and Array is top of stack: set after_newline_state = ValueBegin" --> Newline
+ValueBegin --"whitespace and Array is top of stack" --> ValueBegin
+ArrayValueEnd --"0x2C (,):" --> ValueBegin
+ArrayValueEnd --"0x5D (]):" pop stack, emit ArrayClose" --> stackState()
+ArrayValueEnd --"0x23 (#): set after_comment_state = ArrayValueEnd" --> Comment
+ArrayValueEnd --"0x0A (\n)" --> ArrayValueEnd
+ArrayValueEnd --"0x0D (CR): set after_newline_state = ArrayValueEnd" --> Newline
+ArrayValueEnd --"whitespace" --> ArrayValueEnd
+
+%% array can be empty. Array can have comments anywhere (before val, after val, before closing bracket)
+%% initial state: expect value OR closing bracket
+%% after value state: expect comma OR closing bracket
+%% after comma: expect value OR closing bracket
+%% array = array-open [ array-values ] ws-comment-newline array-close
+%% 
+%% array-open =  %x5B ; [
+%% array-close = %x5D ; ]
+%% 
+%% array-values =  ws-comment-newline val ws-comment-newline array-sep array-values
+%% array-values =/ ws-comment-newline val ws-comment-newline [ array-sep ]
+%% 
+%% array-sep = %x2C  ; , Comma
+
+%% value: inline table
+ValueBegin --"0x7B ({): push InlineTable to stack, emit InlineTableOpen" --> InlineTableKey
+ValueBegin --"0x7D (}) and InlineTable is top of stack: pop stack, emit InlineTableClose" --> stackState()
+ValueBegin --"0x23 (#) and InlineTable is top of stack: set after_comment_state = ValueBegin" --> Comment
+ValueBegin --"0x0A (\n) and InlineTable is top of stack" --> ValueBegin
+ValueBegin --"0x0D (CR) and InlineTable is top of stack: set after_newline_state = ValueBegin" --> Newline
+ValueBegin --"whitespace and InlineTable is top of stack" --> ValueBegin
+InlineTableKey --"ALPHA | DIGIT | - | _: set after_key_state = KeyMaybeDotOrKeyvalSeparator" --> UnquotedKey
+InlineTableKey --"0x22 (double quote): set after_key_state = KeyvalSeparator, after_string_state = KeyMaybeDotOrKeyvalSeparator, string_kind = basic, string_is_content_start = true" --> String
+InlineTableKey --"0x27 (single quote): set after_key_state = KeyvalSeparator, after_string_state = KeyMaybeDotOrKeyvalSeparator, string_kind = literal, string_is_content_start = true" --> String
+InlineTableKeyvalEnd --"0x2C (,):" --> ValueBegin
+InlineTableKeyvalEnd --"0x7D (}): pop stack, emit InlineTableClose" --> stackState()
+InlineTableKeyvalEnd --"0x23 (#): set after_comment_state = InlineTableKeyvalEnd" --> Comment
+InlineTableKeyvalEnd --"0x0A (\n)" --> InlineTableKeyvalEnd
+InlineTableKeyvalEnd --"0x0D (CR): set after_newline_state = InlineTableKeyvalEnd" --> Newline
+InlineTableKeyvalEnd --"whitespace" --> InlineTableKeyvalEnd
+
+%% value: date-time
+%% XXX: validate everything. Currently I don't validate years, months, days, hours, minutes, seconds, offsets. Only the shape of the incoming string. That's too bad.
+%% But this is really a dedicated step (in development - doesn't mean it shouldn't be baked into the tokenizer code).
+%% convention: date component is added only when the component is completed, not right away
+ValueBegin --"0x30-0x39 (0-9):" --> DateTimeDigit2
+DateTimeDigit2 --"0x30-0x39 (0-9):" --> DateTimeMaybeYearDigit3OrColon
+DateTimeMaybeYearDigit3OrColon --"0x3A (:):" --> PartialTimeMinute1
+DateTimeMaybeYearDigit3OrColon --"0x30-0x39 (0-9):" --> DateYearDigit4
+DateYearDigit4 --"0x30-0x39 (0-9):" --> DateHyphen1
+DateHyphen1 --"0x2D (-):" --> DateMonthDigit1
+DateMonthDigit1 --"0x30-0x39 (0-9):" --> DateMonthDigit2
+DateMonthDigit2 --"0x30-0x39 (0-9):" --> DateHyphen2
+DateHyphen2 --"0x2D (-):" --> DateDayDigit1
+DateDayDigit1 --"0x30-0x39 (0-9):" --> DateDayDigit2
+DateDayDigit2 --"0x30-0x39 (0-9): date_components.add(date)" --> DateMaybeDelimiterOrEnd
+DateMaybeDelimiterOrEnd --"0x54 (T):" --> PartialTimeHour1
+DateMaybeDelimiterOrEnd --"0x74 (t):" --> PartialTimeHour1
+DateMaybeDelimiterOrEnd --"0x20 (space):" --> PartialTimeMaybeHour1OrEnd
+DateMaybeDelimiterOrEnd --"(anything else): emit DateTime. REPEAT THE SAME CHAR" --> stackState()
+PartialTimeMaybeHour1OrEnd --"0x30-0x39 (0-9):" --> PartialTimeHour2
+PartialTimeMaybeHour1OrEnd --"(anything else): emit DateTime. REPEAT THE SAME CHAR" --> stackState()
+PartialTimeHour1 --"0x30-0x39 (0-9):" --> PartialTimeHour2
+PartialTimeHour2 --"0x30-0x39 (0-9):" --> PartialTimeColon1
+PartialTimeColon1 --"0x3A (:):" --> PartialTimeMinute1
+PartialTimeMinute1 --"0x30-0x39 (0-9):" --> PartialTimeMinute2
+PartialTimeMinute2 --"0x30-0x39 (0-9): date_components.add(time_hours_minutes)" --> PartialTimeMaybeColon2OrOffsetOrEnd
+PartialTimeMaybeColon2OrOffsetOrEnd --"0x3A (:):" --> PartialTimeSecond1
+PartialTimeSecond1 --"0x30-0x39 (0-9):" --> PartialTimeSecond2
+PartialTimeSecond2 --"0x30-0x39 (0-9): date_components.add(time_seconds)" --> PartialTimeMaybeFractionDelimiterOrOffsetOrEnd
+PartialTimeMaybeFractionDelimiterOrOffsetOrEnd --"0x2E (.)" --> PartialTimeFractionBegin
+PartialTimeMaybeFractionDelimiterOrOffsetOrEnd --"(anything else): emit DateTime. REPEAT THE SAME CHAR" --> stackState()
+PartialTimeFractionBegin --"0x30-0x39 (0-9):" --> PartialTimeFractionOrOffsetOrEnd
+PartialTimeFractionOrOffsetOrEnd --"0x30-0x39 (0-9)" --> PartialTimeFractionOrOffsetOrEnd
+PartialTimeFractionOrOffsetOrEnd --"0x5A (Z): date_components.add(zulu_offset), emit DateTime" --> stackState()
+PartialTimeFractionOrOffsetOrEnd --"0x2B (+):" --> PartialTimeOffsetHour1
+PartialTimeFractionOrOffsetOrEnd --"0x2D (-):" --> PartialTimeOffsetHour1
+PartialTimeOffsetHour1 --"0x30-0x39 (0-9):" --> PartialTimeOffsetHour2
+PartialTimeOffsetHour2 --"0x30-0x39 (0-9):" --> PartialTimeOffsetColon
+PartialTimeOffsetColon --"0x3A (:):" --> PartialTimeOffsetMinute1
+PartialTimeOffsetMinute1 --"0x30-0x39 (0-9):" --> PartialTimeOffsetMinute2
+PartialTimeOffsetMinute2 --"0x30-0x39 (0-9): date_components.add(numeric_offset), emit DateTime" --> stackState()
+PartialTimeFractionOrOffsetOrEnd --"(anything else): date_components.add(time_seconds_fractions), emit DateTime. REPEAT THE SAME CHAR" --> stackState()
+PartialTimeMaybeColon2OrOffsetOrEnd --"0x5A (Z): date_components.add(zulu_offset), emit DateTime" --> stackState()
+PartialTimeMaybeColon2OrOffsetOrEnd --"0x2B (+)" --> PartialTimeOffsetHour1
+PartialTimeMaybeColon2OrOffsetOrEnd --"0x2D (-)" --> PartialTimeOffsetHour1
+PartialTimeMaybeColon2OrOffsetOrEnd --"(anything else): emit DateTime. REPEAT THE SAME CHAR" --> stackState()
+
+%% value: integer. That's pretty crazy.
 
 %% LOGIC FOR STRINGS
 %% literal-char = %x09 / %x20-26 /           %x28-7E / non-ascii
@@ -96,12 +258,11 @@ MultilineEscapedNewlineBegin --"carriage return (0x0d):" --> MultilineEscapedNew
 MultilineEscapedNewlineBegin --"newline (0x0a):" --> MultilineEscapedNewlineEnd
 MultilineEscapedNewlineEnd --"whitespace (0x20 or 0x09):" --> MultilineEscapedNewlineEnd
 MultilineEscapedNewlineEnd --"newline (0x0a):" --> MultilineEscapedNewlineEnd
-MultilineEscapedNewlineEnd --"carriage return (0x0d):" --> MultilineEscapedNewlineEndNewline
-MultilineEscapedNewlineEndNewline --"newline (0x0a):" --> MultilineEscapedNewlineEnd
+MultilineEscapedNewlineEnd --"carriage return (0x0d): set after_newline_state = MultilineEscapedNewlineEnd" --> Newline
 MultilineEscapedNewlineEnd --"(anything else): unset after_escape_state, REPEAT THE SAME CHAR" --> $after_escape_state
 String --"0x0A (newline) and is multiline: set string_is_content_start = false, if string_is_content_start, account for size diff" --> String
-String --"0x0D (CR) and is multiline: set string_is_content_start=false, if string_is_content_start, account for size diff" --> StringNewline
-StringNewline --"0x0A (newline):" --> String
+String --"0x0D (CR) and is multiline: set string_is_content_start=false, set after_newline_state = String, if string_is_content_start, account for size diff" --> Newline
+Newline --"0x0A (newline): unset after_newline_state" --> $after_newline_state
 String --"0x22 (double quote) and is literal: set string_is_content_start=false" --> String
 String --"0x22 (double quote) and is multiline basic: set string_is_content_start=false" --> BasicStringMaybeQuote2OrChar
 BasicStringMaybeQuote2OrChar --"0x22 (double quote):" BasicStringMaybeQuote3OrChar
@@ -122,9 +283,6 @@ LiteralStringMaybeQuote4OrEnd --"0x27 (single quote):" LiteralStringMaybeQuote5O
 LiteralStringMaybeQuote4OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
 LiteralStringMaybeQuote5OrEnd --"0x27 (single quote): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO." --> $after_string_state
 LiteralStringMaybeQuote5OrEnd --"(anything else): unset after_string_state; if after_string_state is ValueBegin, emit String w/ is_key=true. Else TODO. REPAT THE SAME CHAR" --> $after_string_state
-
-Comment --"\n:"--> $after_comment_state
-Comment --"allowed-comment-char:"--> Comment
 ```
 
 multiline basic string. Maybe I must have a `string_kind` variable. I reuse all the states for String. I introduce additional states 1) for recognizing the three leading quotes 2) for recognizing the three to five trailing quotes 3) for recognizing the OPTIONAL leading newline (this is necessary to count string escapes correctly) 4) for recognizing escaped newline. I think an OK strategy is to have the same set of states and just use the "widest" switch & switch on string kind in the portions of the switch that depend on it.
@@ -187,7 +345,8 @@ comment = comment-start-symbol *allowed-comment-char
 comment-start-symbol = %x23 ; #
 allowed-comment-char = %x01-09 / %x0E-7F / non-ascii
 non-ascii = %x80-D7FF / %xE000-10FFFF
-
-;; OLD definition, I'll follow that for now.
-unquoted-key = 1*( ALPHA / DIGIT / %x2D / %x5F ) ; A-Z / a-z / 0-9 / - / _
 ```
+
+## Other notes
+
+I probably need my own type for dates & times. A type that preserves the ambiguity inherent in TOML.

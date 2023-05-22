@@ -27,6 +27,18 @@ const DateTimeKind = enum {
     local_time,
 };
 
+const IntegerBase = enum {
+    binary,
+    octal,
+    decimal,
+    hexadecimal,
+};
+
+const TimeOffsetKind = enum {
+    greenwhich,
+    numeric,
+};
+
 const StringEscapes = union(enum) {
     None,
     Some: struct {
@@ -34,6 +46,17 @@ const StringEscapes = union(enum) {
         size_diff: isize,
     },
 };
+
+const DateTimeComponent = enum {
+    date,
+    time_hours_minutes,
+    time_seconds,
+    time_seconds_fractions,
+    zulu_offset,
+    numeric_offset,
+};
+
+const DateTimeComponentSet = std.bit_set.IntegerBitSet(@typeInfo(DateTimeComponent).Enum.fields.len);
 
 // On top level, I skip whitespace and comments (and my after comment state is still at top level)
 // On top level, I expect a key-value pair or a table
@@ -46,15 +69,12 @@ pub const Token = union(enum) {
     False,
     ArrayOpen,
     ArrayClose,
-    InlineTableOpen,
-    InlineTableClose,
     ArrayTableOpen,
-    ArrayTableClose,
     TableOpen,
-    TableClose,
     InlineTableOpen,
     InlineTableClose,
     DottedKeySeparator,
+    KeyvalSeparator,
 
     /// Unquoted key
     Key: struct {
@@ -75,12 +95,7 @@ pub const Token = union(enum) {
         }
     },
 
-    Integer: struct {
-        count: usize,
-        pub fn slice(self: @This(), input: []const u8, i: usize) []const u8 {
-            return input[i - self.count .. i];
-        }
-    },
+    Integer: i64,
 
     Float: struct {
         count: usize,
@@ -88,12 +103,14 @@ pub const Token = union(enum) {
             return input[i - self.count .. i];
         }
     },
+
     Comment: struct {
         count: usize,
         pub fn slice(self: @This(), input: []const u8, i: usize) []const u8 {
             return input[i - self.count .. i];
         }
     },
+
     DateTime: struct {
         count: usize,
         kind: DateTimeKind,
@@ -101,4 +118,29 @@ pub const Token = union(enum) {
             return input[i - self.count .. i];
         }
     },
+};
+
+pub const StreamingParser = struct {
+    integer_base: IntegerBase = undefined,
+
+    pub const State = enum(u8) {
+        /// Waiting for anythong appropriate on the top level (key-value pair, table, array table, comment)
+        TopLevel,
+        /// Waiting for either the table key or the second bracket of array table key open
+        MaybeTableKeyOrArrayTableKeyOpen2,
+        /// Waiting for table key
+        TableKey,
+        /// Waiting for array table key
+        ArrayTableKey,
+        /// Waiting for the second bracket of array table key close
+        ArrayTableKeyClose2,
+        /// Waiting for the first key-value pair of a table (or next table/array table)
+        TableBegin,
+        Table,
+        ArrayTableBegin,
+        ArrayTable,
+        InlineTableBegin,
+        InlineTable,
+        ArrayValueEnd,
+    };
 };
